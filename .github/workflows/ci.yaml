@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check formatting and module files
+        run: |
+          test -z "$(gofmt -l .)"
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      - name: Unit tests and race detector
+        run: go test -race -cover ./...
+      - name: Static analysis
+        run: go vet ./...
+      - name: Build custom Collector
+        run: go run go.opentelemetry.io/collector/cmd/builder@v0.164.0 --config examples/builder-config.yaml
+      - name: Validate example Collector configuration
+        env:
+          DATABEND_ENDPOINT: http://127.0.0.1:18900
+          DATABEND_USERNAME: databend
+          DATABEND_PASSWORD: databend
+        run: ./_build/otelcol-databend validate --config examples/collector.yaml
+      - name: Start Databend
+        run: |
+          docker run -d --name otel-databend-test \
+            -p 127.0.0.1:18900:8000 \
+            -e QUERY_DEFAULT_USER=databend -e QUERY_DEFAULT_PASSWORD=databend \
+            datafuselabs/databend:v1.2.831-nightly
+          for attempt in $(seq 1 90); do
+            if curl --fail --silent --user databend:databend \
+              -H 'Content-Type: application/json' \
+              -d '{"sql":"SELECT 1"}' http://127.0.0.1:18900/v1/query | grep -q '"state":"Succeeded"'; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs otel-databend-test
+          exit 1
+      - name: Integration tests
+        env:
+          DATABEND_ENDPOINT: http://127.0.0.1:18900
+          DATABEND_USERNAME: databend
+          DATABEND_PASSWORD: databend
+          DATABEND_COLLECTOR_BINARY: ./_build/otelcol-databend
+        run: go test -race -run 'TestIntegration|TestCollectorEndToEnd' -v -count=1 .
+      - name: Databend logs and cleanup
+        if: always()
+        run: |
+          docker logs --tail 100 otel-databend-test || true
+          docker rm -f otel-databend-test || true
