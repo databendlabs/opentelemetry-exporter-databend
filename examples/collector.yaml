@@ -1,0 +1,60 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+    send_batch_max_size: 1024
+
+exporters:
+  databend:
+    endpoint: ${env:DATABEND_ENDPOINT}
+    username: ${env:DATABEND_USERNAME}
+    password: ${env:DATABEND_PASSWORD}
+    database: default
+    # Auto-provision at startup; set false for a pre-provisioned, INSERT-only account.
+    create_schema: true
+    logs_table_name: otel_logs
+    traces_table_name: otel_traces
+    metrics_table_name: otel_metrics
+    timeout: 30s
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+    retry_on_failure:
+      enabled: true
+      initial_interval: 5s
+      max_interval: 30s
+      max_elapsed_time: 300s
+    # For Databend Cloud, use the warehouse HTTPS endpoint. Extra routing
+    # headers can be supplied when required by your deployment:
+    # headers:
+    #   X-Databend-Warehouse: my_warehouse
+    # tls:
+    #   ca_file: /etc/collector/databend-ca.pem
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [databend]
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [databend]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [databend]
